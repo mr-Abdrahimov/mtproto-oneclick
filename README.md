@@ -57,6 +57,20 @@ curl -fsSL https://raw.githubusercontent.com/mr-Abdrahimov/mtproto-oneclick/main
 curl -s http://127.0.0.1:8888/stats
 ```
 
+## Получить ссылки для подключения
+
+Чтобы снова вывести secret и ссылки (например, после переустановки или если вы их не сохранили), выполните на сервере:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mr-Abdrahimov/mtproto-oneclick/main/get-links.sh | sudo sh
+```
+
+Или через wget:
+
+```sh
+wget -qO - https://raw.githubusercontent.com/mr-Abdrahimov/mtproto-oneclick/main/get-links.sh | sudo sh
+```
+
 ## Конфиги
 
 - MTProxy: `/etc/mtproxy/`
