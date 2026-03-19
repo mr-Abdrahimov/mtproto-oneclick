@@ -9,10 +9,26 @@
 
 ## Установка
 
-Запускайте от `root` (через `sudo`):
+Запускайте от `root` (через `sudo`).
+
+**Вариант 1 — скачать и запустить (самый надёжный):**
 
 ```sh
-sudo sh <(wget -O - https://raw.githubusercontent.com/mr-Abdrahimov/mtproto-oneclick/main/install.sh)
+wget -qO /tmp/install-mtproxy.sh https://raw.githubusercontent.com/mr-Abdrahimov/mtproto-oneclick/main/install.sh
+sudo sh /tmp/install-mtproxy.sh
+```
+
+**Вариант 2 — через curl:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mr-Abdrahimov/mtproto-oneclick/main/install.sh -o /tmp/install-mtproxy.sh
+sudo sh /tmp/install-mtproxy.sh
+```
+
+**Вариант 3 — одной строкой (может не работать в части окружений):**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mr-Abdrahimov/mtproto-oneclick/main/install.sh | sudo sh
 ```
 
 Скрипт:
