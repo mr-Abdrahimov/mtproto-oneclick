@@ -37,7 +37,7 @@ prompt_port() {
   while :; do
     printf 'Порт MTProxy (TCP) [%s]: ' "$default_port" >&2
     # shellcheck disable=SC2162
-    read -r in_port || true
+    read -r in_port < /dev/tty
 
     if [ -z "${in_port:-}" ]; then
       PORT="$default_port"
@@ -283,6 +283,8 @@ main() {
   command -v ss >/dev/null 2>&1 || { log "ОШИБКА: ss не найден (установите iproute2)."; exit 1; }
 
   WORKERS="${WORKERS:-1}"
+
+  log "Укажите порт, на котором будет работать MTProxy (по умолчанию 443):"
   PORT="$(prompt_port)"
 
   log "[1/10] Проверяю, что порт ${PORT} свободен"
