@@ -11,12 +11,12 @@ set -eu
 #   sudo sh <(wget -O - https://raw.githubusercontent.com/mr-Abdrahimov/mtproto-oneclick/main/install.sh)
 
 log() {
-  printf '%s\n' "$1"
+  printf '%s\n' "$1" >&2
 }
 
 need_root() {
   if [ "$(id -u)" -ne 0 ]; then
-    log "ERROR: Please run as root (e.g. with sudo)."
+    log "ОШИБКА: Запустите от root (например: sudo)."
     exit 1
   fi
 }
@@ -35,7 +35,7 @@ get_ssh_port() {
 prompt_port() {
   default_port=443
   while :; do
-    printf 'MTProxy port (TCP) [%s]: ' "$default_port"
+    printf 'Порт MTProxy (TCP) [%s]: ' "$default_port" >&2
     # shellcheck disable=SC2162
     read -r in_port || true
 
@@ -46,12 +46,12 @@ prompt_port() {
     fi
 
     case "$PORT" in
-      ''|*[!0-9]*) log "Please enter a number between 1 and 65535."; continue ;;
+      ''|*[!0-9]*) log "Введите число от 1 до 65535."; continue ;;
       *)
         if [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ]; then
           break
         fi
-        log "Please enter a number between 1 and 65535."
+        log "Введите число от 1 до 65535."
         ;;
     esac
   done
@@ -68,17 +68,17 @@ port_is_free() {
 }
 
 install_packages() {
-  log "[2/10] Installing packages"
+  log "[2/10] Устанавливаю пакеты"
   export DEBIAN_FRONTEND=noninteractive
-  apt update
-  apt install -y \
+  apt update -qq
+  apt install -y -qq \
     git curl xxd openssl ca-certificates \
     build-essential libssl-dev zlib1g-dev \
     ufw fail2ban
 }
 
 create_system_user() {
-  log "[3/10] Creating system user: mtproxy"
+  log "[3/10] Создаю системного пользователя mtproxy"
   STATE_DIR="/var/lib/mtproxy"
   if ! id mtproxy >/dev/null 2>&1; then
     useradd --system --home "$STATE_DIR" --create-home --shell /usr/sbin/nologin mtproxy
@@ -88,11 +88,11 @@ create_system_user() {
 build_mtproxy() {
   INSTALL_DIR="/opt/MTProxy"
   BIN="/usr/local/bin/mtproto-proxy"
-  log "[4/10] Downloading MTProxy sources"
+  log "[4/10] Загружаю исходники MTProxy"
   rm -rf "$INSTALL_DIR"
   git clone https://github.com/TelegramMessenger/MTProxy "$INSTALL_DIR"
 
-  log "[5/10] Building MTProxy"
+  log "[5/10] Собираю MTProxy"
   make -C "$INSTALL_DIR"
   install -m 0755 "${INSTALL_DIR}/objs/bin/mtproto-proxy" "$BIN"
 }
@@ -110,7 +110,7 @@ configure() {
   UPDATE_TIMER="/etc/systemd/system/mtproxy-update.timer"
   BIN="/usr/local/bin/mtproto-proxy"
 
-  log "[6/10] Preparing directories and configs"
+  log "[6/10] Подготавливаю каталоги и конфиги"
   install -d -m 0750 -o root -g mtproxy "$CONF_DIR"
   install -d -m 0750 -o mtproxy -g mtproxy "$STATE_DIR"
 
@@ -130,7 +130,7 @@ configure() {
     "${CONF_DIR}/proxy-multi.conf" \
     "${CONF_DIR}/user-secret"
 
-  log "[7/10] Writing systemd service"
+  log "[7/10] Настраиваю systemd-сервис"
   cat > "$DEFAULTS_FILE" <<CFG
 PORT=${PORT}
 WORKERS=${WORKERS}
@@ -154,7 +154,7 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 UNIT
 
-  log "[8/10] Writing daily config refresh"
+  log "[8/10] Настраиваю ежедневное обновление конфига"
   cat > "$UPDATE_SCRIPT" <<'UPD'
 #!/bin/sh
 set -eu
@@ -197,7 +197,7 @@ configure_ufw() {
   PORT="$1"
   SSH_PORT="$2"
 
-  log "[9/10] Configuring UFW (firewall)"
+  log "[9/10] Настраиваю UFW (файрвол)"
   # Make sure UFW is installed already (done in install_packages).
 
   # Add rules first, then enable.
@@ -220,7 +220,7 @@ configure_ufw() {
 configure_fail2ban() {
   SSH_PORT="$1"
 
-  log "[10/10] Configuring Fail2ban for SSH"
+  log "[10/10] Настраиваю Fail2ban для SSH"
 
   # Ubuntu default log for sshd auth is /var/log/auth.log
   cat > /etc/fail2ban/jail.d/sshd.local <<EOF
@@ -238,7 +238,7 @@ EOF
 }
 
 enable_services() {
-  log "Applying systemd units"
+  log "Применяю systemd-юниты"
   systemctl daemon-reload
   systemctl enable --now mtproxy.service
   systemctl enable --now mtproxy-update.timer
@@ -258,20 +258,20 @@ print_final_info() {
   CLIENT_SECRET="dd${SECRET}"
 
   log ""
-  log "========== READY =========="
-  log "Service status:"
+  log "========== ГОТОВО =========="
+  log "Статус сервиса:"
   systemctl --no-pager --full status mtproxy.service 2>/dev/null || true
   log ""
-  log "Client secret:"
+  log "Клиентский secret:"
   log "${SECRET}"
   log ""
-  log "tg://"
+  log "Ссылка tg://"
   log "tg://proxy?server=${PUBLIC_IP}&port=${PORT}&secret=${CLIENT_SECRET}"
   log ""
-  log "https://t.me/proxy"
+  log "Ссылка https://t.me/proxy"
   log "https://t.me/proxy?server=${PUBLIC_IP}&port=${PORT}&secret=${CLIENT_SECRET}"
   log ""
-  log "Local stats:"
+  log "Локальная статистика:"
   log "curl -s http://127.0.0.1:8888/stats"
 }
 
@@ -279,21 +279,21 @@ main() {
   need_root
 
   # Basic required tools check early for clearer errors.
-  command -v apt >/dev/null 2>&1 || { log "ERROR: apt not found. This installer is for Ubuntu/Debian."; exit 1; }
-  command -v ss >/dev/null 2>&1 || { log "ERROR: ss not found (install iproute2)."; exit 1; }
+  command -v apt >/dev/null 2>&1 || { log "ОШИБКА: apt не найден. Установщик для Ubuntu/Debian."; exit 1; }
+  command -v ss >/dev/null 2>&1 || { log "ОШИБКА: ss не найден (установите iproute2)."; exit 1; }
 
   WORKERS="${WORKERS:-1}"
   PORT="$(prompt_port)"
 
-  log "[1/10] Checking that port ${PORT} is free"
+  log "[1/10] Проверяю, что порт ${PORT} свободен"
   if ! port_is_free "$PORT"; then
-    log "ERROR: port ${PORT} is already in use."
+    log "ОШИБКА: порт ${PORT} уже занят."
     ss -ltnp 2>/dev/null | grep ":${PORT}" || true
     exit 1
   fi
 
   SSH_PORT="$(get_ssh_port)"
-  log "Detected SSH port: ${SSH_PORT}"
+  log "Обнаружен порт SSH: ${SSH_PORT}"
 
   install_packages
   create_system_user
