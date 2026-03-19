@@ -63,3 +63,9 @@ curl -s http://127.0.0.1:8888/stats
 - systemd service: `/etc/systemd/system/mtproxy.service`
 - Fail2ban: `/etc/fail2ban/jail.d/sshd.local`
 
+## Устранение неполадок
+
+**Прокси не работает:** проверьте `systemctl status mtproxy`, логи — `journalctl -u mtproxy -n 50`, откройте порт в панели хостинга.
+
+**`curl http://127.0.0.1:8888/stats` возвращает пустое:** скрипт теперь добавляет `--http-stats` при установке. Для уже установленных — добавьте `--http-stats` в `ExecStart` в `/etc/systemd/system/mtproxy.service`, затем `systemctl daemon-reload && systemctl restart mtproxy`.
+

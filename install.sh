@@ -145,7 +145,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/default/mtproxy
-ExecStart=/bin/sh -lc '/usr/local/bin/mtproto-proxy -u mtproxy -p 8888 -H "$PORT" -S "$(cat /etc/mtproxy/user-secret)" --aes-pwd /etc/mtproxy/proxy-secret /etc/mtproxy/proxy-multi.conf -M "$WORKERS"'
+ExecStart=/bin/sh -c '/usr/local/bin/mtproto-proxy -u mtproxy -p 8888 -H "$PORT" -S "$(cat /etc/mtproxy/user-secret)" --http-stats --aes-pwd /etc/mtproxy/proxy-secret /etc/mtproxy/proxy-multi.conf -M "$WORKERS"'
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65535
