@@ -71,6 +71,19 @@ curl -fsSL https://raw.githubusercontent.com/mr-Abdrahimov/mtproto-oneclick/main
 wget -qO - https://raw.githubusercontent.com/mr-Abdrahimov/mtproto-oneclick/main/get-links.sh | sudo sh
 ```
 
+## Proxy-tag из @MTProxybot
+
+После установки скрипт спросит, нужно ли добавить proxy-tag (из бота [@MTProxybot](https://t.me/MTProxybot)). Если выбрать «да», введите 32-символьный hex-тег — сервис перезапустится с `-P` (proxy-tag).
+
+Добавить proxy-tag позже вручную:
+
+```sh
+echo 'ВАШ_32_СИМВОЛЬНЫЙ_ТЕГ' | sudo tee /etc/mtproxy/proxy-tag
+sudo chown root:mtproxy /etc/mtproxy/proxy-tag
+sudo chmod 0640 /etc/mtproxy/proxy-tag
+sudo systemctl restart mtproxy
+```
+
 ## Конфиги
 
 - MTProxy: `/etc/mtproxy/`

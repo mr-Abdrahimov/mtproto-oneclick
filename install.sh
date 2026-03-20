@@ -136,6 +136,19 @@ PORT=${PORT}
 WORKERS=${WORKERS}
 CFG
 
+  # Обёртка для mtproxy: добавляет -P (proxy-tag) если файл существует
+  cat > /usr/local/sbin/mtproxy-run <<'WRAPPER'
+#!/bin/sh
+. /etc/default/mtproxy
+EXTRA=""
+if [ -f /etc/mtproxy/proxy-tag ] && [ -s /etc/mtproxy/proxy-tag ]; then
+  TAG="$(cat /etc/mtproxy/proxy-tag)"
+  EXTRA="-P ${TAG}"
+fi
+exec /usr/local/bin/mtproto-proxy -u mtproxy -p 8888 -H "$PORT" -S "$(cat /etc/mtproxy/user-secret)" --http-stats $EXTRA --aes-pwd /etc/mtproxy/proxy-secret /etc/mtproxy/proxy-multi.conf -M "$WORKERS"
+WRAPPER
+  chmod 0755 /usr/local/sbin/mtproxy-run
+
   cat > "$SERVICE_FILE" <<'UNIT'
 [Unit]
 Description=Telegram MTProxy
@@ -145,7 +158,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/default/mtproxy
-ExecStart=/bin/sh -c '/usr/local/bin/mtproto-proxy -u mtproxy -p 8888 -H "$PORT" -S "$(cat /etc/mtproxy/user-secret)" --http-stats --aes-pwd /etc/mtproxy/proxy-secret /etc/mtproxy/proxy-multi.conf -M "$WORKERS"'
+ExecStart=/usr/local/sbin/mtproxy-run
 Restart=on-failure
 RestartSec=3
 LimitNOFILE=65535
@@ -275,6 +288,47 @@ print_final_info() {
   log "curl -s http://127.0.0.1:8888/stats"
 }
 
+is_valid_hex32() {
+  [ ${#1} -eq 32 ] || return 1
+  case "$1" in
+    *[!0-9a-fA-F]*) return 1 ;;
+  esac
+  return 0
+}
+
+prompt_proxy_tag() {
+  log ""
+  printf 'Добавить proxy-tag из бота @MTProxybot? (y/n) [n]: ' >&2
+  read -r answer < /dev/tty || true
+  case "${answer:-n}" in
+    y|Y|д|Д|да|Да|yes|Yes) ;;
+    *) return 0 ;;
+  esac
+
+  while :; do
+    printf 'Введите proxy-tag (32 hex-символа): ' >&2
+    read -r tag < /dev/tty || true
+    tag="$(echo "$tag" | tr -d ' \t\n\r')"
+    if is_valid_hex32 "$tag"; then
+      break
+    fi
+    log "Ошибка: нужны ровно 32 hex-символа (0-9, a-f). Попробуйте снова."
+  done
+
+  printf '%s' "$tag" > /etc/mtproxy/proxy-tag
+  chown root:mtproxy /etc/mtproxy/proxy-tag
+  chmod 0640 /etc/mtproxy/proxy-tag
+
+  log "Proxy-tag сохранён. Перезапускаю mtproxy..."
+  systemctl restart mtproxy.service
+  sleep 1
+  if systemctl is-active --quiet mtproxy.service; then
+    log "Готово. MTProxy перезапущен с proxy-tag."
+  else
+    log "ПРЕДУПРЕЖДЕНИЕ: mtproxy не запустился. Проверьте: journalctl -u mtproxy -n 20"
+  fi
+}
+
 main() {
   need_root
 
@@ -307,6 +361,8 @@ main() {
   configure_fail2ban "$SSH_PORT"
 
   print_final_info "$PORT" "$SECRET"
+
+  prompt_proxy_tag
 }
 
 main "$@"
