@@ -305,6 +305,24 @@ prompt_proxy_tag() {
     *) return 0 ;;
   esac
 
+  PORT="$(grep -E '^PORT=' /etc/default/mtproxy 2>/dev/null | cut -d= -f2 || echo 443)"
+  SECRET="$(cat /etc/mtproxy/user-secret 2>/dev/null || true)"
+  PUBLIC_IP="$(curl -4fsSL https://api.ipify.org 2>/dev/null || true)"
+  [ -z "$PUBLIC_IP" ] && PUBLIC_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  [ -z "$PUBLIC_IP" ] && PUBLIC_IP="YOUR_SERVER_IP"
+
+  log ""
+  log "Отправьте боту @MTProxybot:"
+  log ""
+  log "host:port"
+  log "${PUBLIC_IP}:${PORT}"
+  log ""
+  log "secret"
+  log "${SECRET}"
+  log ""
+  log "После регистрации бот пришлёт proxy-tag. Введите его ниже:"
+  log ""
+
   while :; do
     printf 'Введите proxy-tag (32 hex-символа): ' >&2
     read -r tag < /dev/tty || true
