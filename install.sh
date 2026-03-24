@@ -5,8 +5,9 @@ set -eu
 #
 # Режим 1 — классический mtproto-proxy от Telegram:
 #   - Сборка из исходников, systemd, ежедневное обновление proxy-multi.conf
-# Режим 2 — Telemt в Docker (Fake TLS + маскировка TCP под реальный сайт, см. Telemt / обзоры вроде https://habr.com/ru/articles/995102/):
-#   - SNI (tls_domain) задаётся при установке; mask + tls_emulation для поведения «как у настоящего HTTPS»
+# Режим 2 — Telemt с https://github.com/telemt/telemt (Fake TLS + маскировка TCP под реальный сайт, см. https://habr.com/ru/articles/995102/):
+#   - Бинарник с GitHub Releases (amd64/arm64). Образ ghcr.io/telemt/telemt сейчас только arm64 — на x86_64 Docker-пулл падает.
+#   - SNI (tls_domain) задаётся при установке; mask + tls_emulation
 # - В обоих режимах: UFW (SSH + порт прокси), Fail2ban для SSH
 #
 # Usage:
@@ -60,12 +61,12 @@ prompt_port() {
   printf '%s' "$PORT"
 }
 
-# 1 = classic mtproto-proxy, 2 = Telemt (Docker, Fake TLS + masking)
+# 1 = classic mtproto-proxy, 2 = Telemt (Fake TLS + masking)
 prompt_install_mode() {
   log ""
   log "Режим установки:"
   log "  1) Классический MTProxy (исходники Telegram, systemd, секрет dd...)"
-  log "  2) Telemt в Docker — Fake TLS и маскировка под выбранный SNI (устойчивее к active probing / DPI)"
+  log "  2) Telemt (бинарник) — Fake TLS и маскировка под выбранный SNI (устойчивее к active probing / DPI)"
   log ""
   while :; do
     printf 'Выберите 1 или 2 [1]: ' >&2
@@ -129,21 +130,39 @@ install_packages() {
 }
 
 install_packages_telemt() {
-  log "[2/8] Устанавливаю Docker и базовые пакеты"
+  log "[2/8] Устанавливаю пакеты для Telemt"
   export DEBIAN_FRONTEND=noninteractive
   apt update -qq
-  apt install -y -qq curl openssl ca-certificates ufw fail2ban docker.io python3
-  if ! apt install -y -qq docker-compose-v2 2>/dev/null; then
-    apt install -y -qq docker-compose-plugin || {
-      log "ОШИБКА: нужен Docker Compose v2 (пакет docker-compose-v2 или docker-compose-plugin)."
+  apt install -y -qq curl tar openssl ca-certificates ufw fail2ban python3
+}
+
+telemt_download_triple() {
+  m="$(uname -m)"
+  case "$m" in
+    x86_64|amd64) printf '%s' "x86_64-linux-gnu" ;;
+    aarch64|arm64) printf '%s' "aarch64-linux-gnu" ;;
+    *)
+      log "ОШИБКА: архитектура «$m» не поддерживается установщиком Telemt (нужны x86_64 или aarch64)."
       exit 1
-    }
-  fi
-  systemctl enable --now docker >/dev/null 2>&1 || true
-  if ! docker compose version >/dev/null 2>&1; then
-    log "ОШИБКА: команда «docker compose» недоступна после установки пакетов."
+      ;;
+  esac
+}
+
+telemt_fetch_binary() {
+  TAR_NAME="telemt-$(telemt_download_triple).tar.gz"
+  URL="https://github.com/telemt/telemt/releases/latest/download/${TAR_NAME}"
+  TMP_TGZ="$(mktemp)"
+  TMP_DIR="$(mktemp -d)"
+  trap 'rm -rf "$TMP_TGZ" "$TMP_DIR"' EXIT
+  log "[4/8] Скачиваю Telemt: ${TAR_NAME}"
+  curl -fsSL -o "$TMP_TGZ" "$URL" || {
+    log "ОШИБКА: не удалось скачать ${URL}"
     exit 1
-  fi
+  }
+  tar -xzf "$TMP_TGZ" -C "$TMP_DIR"
+  install -m 0755 "${TMP_DIR}/telemt" /usr/local/bin/telemt
+  rm -rf "$TMP_TGZ" "$TMP_DIR"
+  trap - EXIT
 }
 
 create_system_user() {
@@ -357,44 +376,12 @@ print_final_info() {
   log "curl -s http://127.0.0.1:8888/stats"
 }
 
-telemt_write_compose() {
-  TELEMT_PORT="$1"
-  cat > /opt/telemt/docker-compose.yml <<YML
-services:
-  telemt:
-    image: ghcr.io/telemt/telemt:latest
-    container_name: telemt
-    restart: unless-stopped
-    ports:
-      - "${TELEMT_PORT}:${TELEMT_PORT}/tcp"
-      - "127.0.0.1:9090:9090/tcp"
-      - "127.0.0.1:9091:9091/tcp"
-    working_dir: /run/telemt
-    volumes:
-      - ./config.toml:/run/telemt/config.toml:ro
-    tmpfs:
-      - /run/telemt:rw,mode=1777,size=8m
-    environment:
-      - RUST_LOG=info
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_BIND_SERVICE
-    read_only: true
-    security_opt:
-      - no-new-privileges:true
-    ulimits:
-      nofile:
-        soft: 65536
-        hard: 65536
-YML
-}
-
 telemt_write_config() {
   TELEMT_PORT="$1"
   TLS_DOMAIN="$2"
   SECRET="$3"
-  cat > /opt/telemt/config.toml <<CFG
+  install -d -m 0750 -o root -g telemt /etc/telemt
+  cat > /etc/telemt/telemt.toml <<CFG
 # Сгенерировано mtproto-oneclick (Telemt, Fake TLS + masking)
 
 [general]
@@ -414,9 +401,8 @@ port = ${TELEMT_PORT}
 
 [server.api]
 enabled = true
-listen = "0.0.0.0:9091"
-# localhost + типичные подсети Docker: запрос с хоста к 127.0.0.1:9091 часто приходит в виде 172.17.0.1
-whitelist = ["127.0.0.0/8", "::1/128", "172.16.0.0/12"]
+listen = "127.0.0.1:9091"
+whitelist = ["127.0.0.0/8", "::1/128"]
 
 [[server.listeners]]
 ip = "0.0.0.0"
@@ -425,27 +411,35 @@ ip = "0.0.0.0"
 tls_domain = "${TLS_DOMAIN}"
 mask = true
 tls_emulation = true
-tls_front_dir = "tlsfront"
+tls_front_dir = "/var/lib/telemt/tlsfront"
 
 [access.users]
 user1 = "${SECRET}"
 CFG
+  chown root:telemt /etc/telemt/telemt.toml
+  chmod 0640 /etc/telemt/telemt.toml
 }
 
-telemt_write_systemd() {
-  cat > /etc/systemd/system/telemt-compose.service <<'UNIT'
+telemt_write_systemd_unit() {
+  cat > /etc/systemd/system/telemt.service <<'UNIT'
 [Unit]
-Description=Telemt MTProxy (Docker Compose)
-After=docker.service
-Requires=docker.service
+Description=Telemt MTProxy
+After=network-online.target
+Wants=network-online.target
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
-WorkingDirectory=/opt/telemt
-ExecStart=/usr/bin/docker compose up -d --remove-orphans
-ExecStop=/usr/bin/docker compose down
-TimeoutStartSec=300
+Type=simple
+User=telemt
+Group=telemt
+WorkingDirectory=/var/lib/telemt
+Environment=RUST_LOG=info
+ExecStart=/usr/local/bin/telemt /etc/telemt/telemt.toml
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65536
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
@@ -456,23 +450,34 @@ telemt_setup() {
   TELEMT_PORT="$1"
   TLS_DOMAIN="$2"
 
-  log "[3/8] Готовлю каталог /opt/telemt и конфигурацию Telemt"
-  install -d -m 0755 /opt/telemt
+  log "[3/8] Создаю пользователя telemt и каталоги"
+  if command -v docker >/dev/null 2>&1; then
+    docker rm -f telemt >/dev/null 2>&1 || true
+  fi
+  if ! id telemt >/dev/null 2>&1; then
+    useradd --system --home /var/lib/telemt --create-home --shell /usr/sbin/nologin telemt
+  fi
+  install -d -m 0750 -o telemt -g telemt /var/lib/telemt
+  install -d -m 0755 -o telemt -g telemt /var/lib/telemt/tlsfront
+
   SECRET="$(openssl rand -hex 16)"
   telemt_write_config "$TELEMT_PORT" "$TLS_DOMAIN" "$SECRET"
-  telemt_write_compose "$TELEMT_PORT"
 
-  log "[4/8] Подтягиваю образ и поднимаю контейнер"
-  (cd /opt/telemt && docker compose pull -q && docker compose up -d --remove-orphans)
+  telemt_fetch_binary
 
-  log "[5/8] Включаю автозапуск Docker Compose (telemt-compose.service)"
-  telemt_write_systemd
+  log "[5/8] Настраиваю systemd-службу telemt"
+  systemctl stop telemt-compose.service >/dev/null 2>&1 || true
+  systemctl disable telemt-compose.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/telemt-compose.service
+  telemt_write_systemd_unit
   systemctl daemon-reload
-  systemctl enable --now telemt-compose.service >/dev/null 2>&1 || true
+  systemctl enable --now telemt.service
 
-  printf '%s' "$SECRET" > /opt/telemt/user-secret
-  printf '%s' "$TLS_DOMAIN" > /opt/telemt/tls-domain
-  printf '%s' "$TELEMT_PORT" > /opt/telemt/listen-port
+  printf '%s' "$SECRET" > /etc/telemt/user-secret
+  chown root:telemt /etc/telemt/user-secret
+  chmod 0640 /etc/telemt/user-secret
+  printf '%s' "$TLS_DOMAIN" > /etc/telemt/tls-domain
+  printf '%s' "$TELEMT_PORT" > /etc/telemt/listen-port
 }
 
 print_final_info_telemt() {
@@ -487,10 +492,10 @@ print_final_info_telemt() {
 
   log ""
   log "========== ГОТОВО (Telemt) =========="
-  log "Контейнер:"
-  docker ps --filter name=^telemt$ --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || true
+  log "Служба:"
+  systemctl --no-pager --full status telemt.service 2>/dev/null || true
   log ""
-  log "Ссылки для клиента (Fake TLS); если пусто — подождите и смотрите docker logs telemt:"
+  log "Ссылки для клиента (Fake TLS); если пусто — подождите секунду и проверьте journalctl -u telemt:"
   n=0
   while [ "$n" -lt 15 ]; do
     if curl -fsS --max-time 2 "http://127.0.0.1:9091/v1/users" >/dev/null 2>&1; then
@@ -516,7 +521,7 @@ for u in data:
 PY
     rm -f /tmp/telemt-users.json
   else
-    log "(API http://127.0.0.1:9091 пока недоступен — см. docker logs telemt)"
+    log "(API http://127.0.0.1:9091 пока недоступен — см. journalctl -u telemt -n 50)"
   fi
   log ""
   log "Снова вывести ссылки: sh /path/to/get-links.sh (Telemt) или curl -s http://127.0.0.1:9091/v1/users"
@@ -524,7 +529,7 @@ PY
   log "Проверка маскировки (как в обзорах про active probing):"
   log "curl -v -I --resolve ${TLS_DOMAIN}:${TELEMT_PORT}:${PUBLIC_IP} https://${TLS_DOMAIN}/"
   log ""
-  log "Файлы: /opt/telemt/config.toml | логи: docker logs -n 80 telemt"
+  log "Файлы: /etc/telemt/telemt.toml | логи: journalctl -u telemt -n 80 --no-pager"
   log "ad_tag / @MTProxybot для Telemt: https://github.com/telemt/telemt/blob/main/docs/FAQ.ru.md"
 }
 
@@ -612,7 +617,7 @@ main() {
 
   if [ "$MODE" = "telemt" ]; then
     TLS_DOMAIN="$(prompt_tls_domain)"
-    log "[1/8] Режим: Telemt (Docker)"
+    log "[1/8] Режим: Telemt (официальный бинарник)"
     install_packages_telemt
     telemt_setup "$PORT" "$TLS_DOMAIN"
     configure_ufw "$PORT" "$SSH_PORT"

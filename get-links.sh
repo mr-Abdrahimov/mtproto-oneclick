@@ -5,7 +5,7 @@ set -eu
 
 SECRET_FILE="/etc/mtproxy/user-secret"
 DEFAULTS_FILE="/etc/default/mtproxy"
-TELEMT_COMPOSE="/opt/telemt/docker-compose.yml"
+TELEMT_CONFIG="/etc/telemt/telemt.toml"
 TELEMT_API="http://127.0.0.1:9091/v1/users"
 
 telemt_links() {
@@ -19,7 +19,7 @@ telemt_links() {
   fi
   if ! curl -fsS --max-time 5 "$TELEMT_API" -o /tmp/telemt-users.json 2>/dev/null; then
     echo "Ошибка: Telemt API недоступен по ${TELEMT_API}"
-    echo "Проверьте: docker ps | grep telemt && docker logs telemt"
+    echo "Проверьте: systemctl status telemt | journalctl -u telemt -n 30"
     exit 1
   fi
   echo
@@ -72,11 +72,11 @@ classic_links() {
   echo "curl -s http://127.0.0.1:8888/stats"
 }
 
-if [ -f "$TELEMT_COMPOSE" ]; then
+if [ -f "$TELEMT_CONFIG" ]; then
   telemt_links
 elif [ -f "$SECRET_FILE" ]; then
   classic_links
 else
-  echo "Ошибка: не найден ни Telemt ($TELEMT_COMPOSE), ни классический MTProxy ($SECRET_FILE)"
+  echo "Ошибка: не найден ни Telemt ($TELEMT_CONFIG), ни классический MTProxy ($SECRET_FILE)"
   exit 1
 fi
