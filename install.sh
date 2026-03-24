@@ -507,7 +507,18 @@ telemt_setup() {
     PUBLIC_HOST="0.0.0.0"
   fi
 
-  SECRET="$(openssl rand -hex 16)"
+  SECRET=""
+  if [ -f /etc/telemt/user-secret ]; then
+    _oldsec="$(tr -d ' \t\n\r' < /etc/telemt/user-secret)"
+    if is_valid_hex32 "$_oldsec"; then
+      SECRET="$_oldsec"
+      log "Найден существующий секрет user1 — не меняю (не нужно заново регистрировать прокси в @MTProxybot)."
+    fi
+  fi
+  if [ -z "$SECRET" ]; then
+    SECRET="$(openssl rand -hex 16)"
+  fi
+
   telemt_write_config "$TELEMT_PORT" "$TLS_DOMAIN" "$SECRET" "$PUBLIC_HOST"
 
   telemt_fetch_binary
