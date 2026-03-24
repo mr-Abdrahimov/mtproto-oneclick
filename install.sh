@@ -380,6 +380,7 @@ telemt_write_config() {
   TELEMT_PORT="$1"
   TLS_DOMAIN="$2"
   SECRET="$3"
+  PUBLIC_HOST="$4"
   install -d -m 0750 -o root -g telemt /etc/telemt
   cat > /etc/telemt/telemt.toml <<CFG
 # Сгенерировано mtproto-oneclick (Telemt, Fake TLS + masking)
@@ -395,6 +396,8 @@ tls = true
 
 [general.links]
 show = ["user1"]
+public_host = "${PUBLIC_HOST}"
+public_port = ${TELEMT_PORT}
 
 [server]
 port = ${TELEMT_PORT}
@@ -460,8 +463,17 @@ telemt_setup() {
   install -d -m 0750 -o telemt -g telemt /var/lib/telemt
   install -d -m 0755 -o telemt -g telemt /var/lib/telemt/tlsfront
 
+  PUBLIC_HOST="$(curl -4fsSL https://api.ipify.org 2>/dev/null || true)"
+  if [ -z "$PUBLIC_HOST" ]; then
+    PUBLIC_HOST="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  fi
+  if [ -z "$PUBLIC_HOST" ]; then
+    log "ПРЕДУПРЕЖДЕНИЕ: не удалось определить публичный IPv4 для ссылок. Укажите public_host вручную в /etc/telemt/telemt.toml и перезапустите telemt."
+    PUBLIC_HOST="0.0.0.0"
+  fi
+
   SECRET="$(openssl rand -hex 16)"
-  telemt_write_config "$TELEMT_PORT" "$TLS_DOMAIN" "$SECRET"
+  telemt_write_config "$TELEMT_PORT" "$TLS_DOMAIN" "$SECRET" "$PUBLIC_HOST"
 
   telemt_fetch_binary
 
@@ -541,6 +553,7 @@ PY
   log ""
   log "Проверка маскировки (как в обзорах про active probing):"
   log "curl -v -I --resolve ${TLS_DOMAIN}:${TELEMT_PORT}:${PUBLIC_IP} https://${TLS_DOMAIN}/"
+  log "(TLS и цепочка сертификатов до маскируемого хоста — главный признак успеха; код HTTP у edge часто 301/302/403/418 и не обязан быть 200.)"
   log ""
   log "Файлы: /etc/telemt/telemt.toml | логи: journalctl -u telemt -n 80 --no-pager"
   log "ad_tag / @MTProxybot для Telemt: https://github.com/telemt/telemt/blob/main/docs/FAQ.ru.md"
