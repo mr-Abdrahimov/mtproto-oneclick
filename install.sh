@@ -666,11 +666,12 @@ prompt_telemt_proxy_tag() {
   log ""
   log "Не отправляйте «secret» из ссылки tg://proxy — нужен только сырой hex с сервера."
   log "Ссылку, которую пришлёт бот, не используйте — для Telemt она не подходит."
-  log "После ответа бота вставьте ниже полученный proxy-tag (ad_tag)."
+  log "Как в режиме 1: в бот уходит secret, от бота вы получаете отдельную строку — proxy-tag (ad_tag); это не тот же secret."
+  log "После ответа бота вставьте ниже только proxy-tag (32 hex). Перезагрузка сервера не нужна — скрипт сделает systemctl restart telemt."
   log ""
 
   while :; do
-    printf 'Введите proxy-tag (32 hex-символа): ' >&2
+    printf 'Введите proxy-tag из ответа бота (32 hex, ad_tag): ' >&2
     tag="$(read_line_interactive)"
     tag="$(sanitize_tty_line "$tag")"
     tag="$(printf '%s' "$tag" | tr -d ' \t\n\r')"
