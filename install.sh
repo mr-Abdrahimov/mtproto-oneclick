@@ -527,6 +527,73 @@ telemt_setup() {
   printf '%s' "$TELEMT_PORT" > /etc/telemt/listen-port
 }
 
+# Печатает в stdout по одной ссылке tg:// на строку (предпочтительно tls). Возврат 0 если API ответил.
+telemt_dump_api_tls_links() {
+  n=0
+  while [ "$n" -lt 15 ]; do
+    if curl -fsS --max-time 2 "http://127.0.0.1:9091/v1/users" >/dev/null 2>&1; then
+      break
+    fi
+    n=$((n + 1))
+    sleep 1
+  done
+  curl -fsS --max-time 5 "http://127.0.0.1:9091/v1/users" -o /tmp/telemt-users.json 2>/dev/null || return 1
+  python3 <<'PY'
+import json
+import sys
+
+def user_dicts(payload):
+    if isinstance(payload, list):
+        return [x for x in payload if isinstance(x, dict)]
+    if isinstance(payload, dict):
+        for key in ("users", "data", "items", "result", "payload"):
+            v = payload.get(key)
+            if isinstance(v, list):
+                return [x for x in v if isinstance(x, dict)]
+            if isinstance(v, dict) and v and all(isinstance(x, dict) for x in v.values()):
+                return list(v.values())
+    return []
+
+try:
+    with open("/tmp/telemt-users.json", encoding="utf-8") as f:
+        raw = json.load(f)
+except Exception:
+    sys.exit(1)
+out = []
+for u in user_dicts(raw):
+    links = u.get("links") or {}
+    tls = links.get("tls") or ()
+    for L in tls:
+        out.append(L)
+    if not tls:
+        for kind in ("secure", "classic"):
+            for L in links.get(kind) or ():
+                out.append(L)
+for L in out:
+    print(L)
+PY
+  _py="$?"
+  rm -f /tmp/telemt-users.json
+  return "$_py"
+}
+
+telemt_log_api_links() {
+  log "$1"
+  if telemt_dump_api_tls_links > /tmp/telemt-tls-out.txt 2>/dev/null; then
+    if [ -s /tmp/telemt-tls-out.txt ]; then
+      while IFS= read -r line; do
+        [ -n "$line" ] && log "$line"
+      done < /tmp/telemt-tls-out.txt
+    else
+      log "(API ответил, но список ссылок пуст — см. journalctl -u telemt)"
+    fi
+    rm -f /tmp/telemt-tls-out.txt
+  else
+    rm -f /tmp/telemt-tls-out.txt
+    log "(API http://127.0.0.1:9091 недоступен — см. journalctl -u telemt -n 50)"
+  fi
+}
+
 print_final_info_telemt() {
   TELEMT_PORT="$1"
   TLS_DOMAIN="$2"
@@ -542,47 +609,7 @@ print_final_info_telemt() {
   log "Служба:"
   systemctl --no-pager --full status telemt.service 2>/dev/null || true
   log ""
-  log "Ссылки для клиента (Fake TLS); если пусто — подождите секунду и проверьте journalctl -u telemt:"
-  n=0
-  while [ "$n" -lt 15 ]; do
-    if curl -fsS --max-time 2 "http://127.0.0.1:9091/v1/users" >/dev/null 2>&1; then
-      break
-    fi
-    n=$((n + 1))
-    sleep 1
-  done
-  if curl -fsS --max-time 5 "http://127.0.0.1:9091/v1/users" -o /tmp/telemt-users.json 2>/dev/null; then
-    python3 <<'PY'
-import json
-
-def user_dicts(payload):
-    if isinstance(payload, list):
-        return [x for x in payload if isinstance(x, dict)]
-    if isinstance(payload, dict):
-        for key in ("users", "data", "items", "result", "payload"):
-            v = payload.get(key)
-            if isinstance(v, list):
-                return [x for x in v if isinstance(x, dict)]
-            if isinstance(v, dict) and v and all(isinstance(x, dict) for x in v.values()):
-                return list(v.values())
-    return []
-
-with open("/tmp/telemt-users.json", encoding="utf-8") as f:
-    raw = json.load(f)
-for u in user_dicts(raw):
-    links = u.get("links") or {}
-    tls = links.get("tls") or ()
-    for L in tls:
-        print(L)
-    if not tls:
-        for kind in ("secure", "classic"):
-            for L in links.get(kind) or ():
-                print(L)
-PY
-    rm -f /tmp/telemt-users.json
-  else
-    log "(API http://127.0.0.1:9091 пока недоступен — см. journalctl -u telemt -n 50)"
-  fi
+  telemt_log_api_links "Ссылки для клиента (Fake TLS); если пусто — подождите и проверьте journalctl -u telemt:"
   log ""
   log "Снова вывести ссылки: sh /path/to/get-links.sh (Telemt) или curl -s http://127.0.0.1:9091/v1/users"
   log ""
@@ -692,6 +719,15 @@ prompt_telemt_proxy_tag() {
   sleep 1
   if systemctl is-active --quiet telemt.service; then
     log "Готово. В боте: /myproxies → ваш прокси → Set promotion (публичная ссылка на канал; подождите до ~1 ч обновления)."
+    log ""
+    sleep 2
+    telemt_log_api_links "Актуальная ссылка после ad_tag / middle proxy — удалите старый прокси в Telegram и добавьте эту (старая ссылка из чата часто перестаёт работать):"
+    log ""
+    log "Если Telegram пишет «прокси недоступен»:"
+    log "  • Используйте только свежую tg:// ссылку из блока выше (после каждой переустановки и после ad_tag секрет/режим могут отличаться)."
+    log "  • Проверка TCP снаружи: nc -vz ${PUBLIC_HOST} ${PORT} (если timeout — откройте порт ${PORT} у провайдера VPS, не только UFW)."
+    log "  • Распространение у Telegram после бота может занять до ~1 ч."
+    log "  • Тест без спонсора: в /etc/telemt/telemt.toml задайте use_middle_proxy = false, удалите строку ad_tag, затем systemctl restart telemt — если так заработает, проблема в middle proxy / ожидании бота."
   else
     log "ПРЕДУПРЕЖДЕНИЕ: telemt не запустился. Проверьте: journalctl -u telemt -n 30"
   fi
