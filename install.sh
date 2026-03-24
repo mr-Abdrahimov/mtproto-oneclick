@@ -1,11 +1,13 @@
 #!/usr/bin/env sh
 set -eu
 
-# Ubuntu installer for Telegram MTProxy (mtproto-proxy).
-# - Installs and builds MTProxy from GitHub sources
-# - Creates systemd service + daily config refresh timer
-# - Enables UFW and only allows SSH + MTProxy ports
-# - Installs Fail2ban for SSH protection
+# Ubuntu installer for Telegram MTProxy.
+#
+# Режим 1 — классический mtproto-proxy от Telegram:
+#   - Сборка из исходников, systemd, ежедневное обновление proxy-multi.conf
+# Режим 2 — Telemt в Docker (Fake TLS + маскировка TCP под реальный сайт, см. Telemt / обзоры вроде https://habr.com/ru/articles/995102/):
+#   - SNI (tls_domain) задаётся при установке; mask + tls_emulation для поведения «как у настоящего HTTPS»
+# - В обоих режимах: UFW (SSH + порт прокси), Fail2ban для SSH
 #
 # Usage:
 #   sudo sh <(wget -O - https://raw.githubusercontent.com/mr-Abdrahimov/mtproto-oneclick/main/install.sh)
@@ -58,6 +60,55 @@ prompt_port() {
   printf '%s' "$PORT"
 }
 
+# 1 = classic mtproto-proxy, 2 = Telemt (Docker, Fake TLS + masking)
+prompt_install_mode() {
+  log ""
+  log "Режим установки:"
+  log "  1) Классический MTProxy (исходники Telegram, systemd, секрет dd...)"
+  log "  2) Telemt в Docker — Fake TLS и маскировка под выбранный SNI (устойчивее к active probing / DPI)"
+  log ""
+  while :; do
+    printf 'Выберите 1 или 2 [1]: ' >&2
+    read -r m </dev/tty || true
+    case "${m:-1}" in
+      1) printf '%s' classic; return ;;
+      2) printf '%s' telemt; return ;;
+      *) log "Введите 1 или 2." ;;
+    esac
+  done
+}
+
+is_valid_sni() {
+  host="$1"
+  [ -n "$host" ] || return 1
+  case "$host" in
+    *[!a-zA-Z0-9.-]*) return 1 ;;
+  esac
+  case "$host" in
+    *..*|-*|.*|*.) return 1 ;;
+  esac
+  return 0
+}
+
+prompt_tls_domain() {
+  log ""
+  log "Домен для SNI и маскировки (TLS). Примеры: eh.vk.com, ozon.ru, seller.ozon.ru, st.max.ru, web.max.ru"
+  log "Выберите свой домен; один и тот же на массе серверов сам становится сигнатурой."
+  default_sni="eh.vk.com"
+  while :; do
+    printf 'SNI / tls_domain [%s]: ' "$default_sni" >&2
+    read -r d </dev/tty || true
+    if [ -z "${d:-}" ]; then
+      d="$default_sni"
+    fi
+    if is_valid_sni "$d"; then
+      printf '%s' "$d"
+      return
+    fi
+    log "Некорректное имя: допустимы латинские буквы, цифры, точки и дефисы (без .. в начале/конце)."
+  done
+}
+
 port_is_free() {
   # Returns 0 if free, 1 if already listening.
   port="$1"
@@ -75,6 +126,24 @@ install_packages() {
     git curl xxd openssl ca-certificates \
     build-essential libssl-dev zlib1g-dev \
     ufw fail2ban
+}
+
+install_packages_telemt() {
+  log "[2/8] Устанавливаю Docker и базовые пакеты"
+  export DEBIAN_FRONTEND=noninteractive
+  apt update -qq
+  apt install -y -qq curl openssl ca-certificates ufw fail2ban docker.io python3
+  if ! apt install -y -qq docker-compose-v2 2>/dev/null; then
+    apt install -y -qq docker-compose-plugin || {
+      log "ОШИБКА: нужен Docker Compose v2 (пакет docker-compose-v2 или docker-compose-plugin)."
+      exit 1
+    }
+  fi
+  systemctl enable --now docker >/dev/null 2>&1 || true
+  if ! docker compose version >/dev/null 2>&1; then
+    log "ОШИБКА: команда «docker compose» недоступна после установки пакетов."
+    exit 1
+  fi
 }
 
 create_system_user() {
@@ -210,7 +279,7 @@ configure_ufw() {
   PORT="$1"
   SSH_PORT="$2"
 
-  log "[9/10] Настраиваю UFW (файрвол)"
+  log "Настраиваю UFW (файрвол)"
   # Make sure UFW is installed already (done in install_packages).
 
   # Add rules first, then enable.
@@ -233,7 +302,7 @@ configure_ufw() {
 configure_fail2ban() {
   SSH_PORT="$1"
 
-  log "[10/10] Настраиваю Fail2ban для SSH"
+  log "Настраиваю Fail2ban для SSH"
 
   # Ubuntu default log for sshd auth is /var/log/auth.log
   cat > /etc/fail2ban/jail.d/sshd.local <<EOF
@@ -286,6 +355,177 @@ print_final_info() {
   log ""
   log "Локальная статистика:"
   log "curl -s http://127.0.0.1:8888/stats"
+}
+
+telemt_write_compose() {
+  TELEMT_PORT="$1"
+  cat > /opt/telemt/docker-compose.yml <<YML
+services:
+  telemt:
+    image: ghcr.io/telemt/telemt:latest
+    container_name: telemt
+    restart: unless-stopped
+    ports:
+      - "${TELEMT_PORT}:${TELEMT_PORT}/tcp"
+      - "127.0.0.1:9090:9090/tcp"
+      - "127.0.0.1:9091:9091/tcp"
+    working_dir: /run/telemt
+    volumes:
+      - ./config.toml:/run/telemt/config.toml:ro
+    tmpfs:
+      - /run/telemt:rw,mode=1777,size=8m
+    environment:
+      - RUST_LOG=info
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+YML
+}
+
+telemt_write_config() {
+  TELEMT_PORT="$1"
+  TLS_DOMAIN="$2"
+  SECRET="$3"
+  cat > /opt/telemt/config.toml <<CFG
+# Сгенерировано mtproto-oneclick (Telemt, Fake TLS + masking)
+
+[general]
+use_middle_proxy = false
+log_level = "normal"
+
+[general.modes]
+classic = false
+secure = false
+tls = true
+
+[general.links]
+show = ["user1"]
+
+[server]
+port = ${TELEMT_PORT}
+
+[server.api]
+enabled = true
+listen = "0.0.0.0:9091"
+# localhost + типичные подсети Docker: запрос с хоста к 127.0.0.1:9091 часто приходит в виде 172.17.0.1
+whitelist = ["127.0.0.0/8", "::1/128", "172.16.0.0/12"]
+
+[[server.listeners]]
+ip = "0.0.0.0"
+
+[censorship]
+tls_domain = "${TLS_DOMAIN}"
+mask = true
+tls_emulation = true
+tls_front_dir = "tlsfront"
+
+[access.users]
+user1 = "${SECRET}"
+CFG
+}
+
+telemt_write_systemd() {
+  cat > /etc/systemd/system/telemt-compose.service <<'UNIT'
+[Unit]
+Description=Telemt MTProxy (Docker Compose)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/telemt
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+ExecStop=/usr/bin/docker compose down
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
+telemt_setup() {
+  TELEMT_PORT="$1"
+  TLS_DOMAIN="$2"
+
+  log "[3/8] Готовлю каталог /opt/telemt и конфигурацию Telemt"
+  install -d -m 0755 /opt/telemt
+  SECRET="$(openssl rand -hex 16)"
+  telemt_write_config "$TELEMT_PORT" "$TLS_DOMAIN" "$SECRET"
+  telemt_write_compose "$TELEMT_PORT"
+
+  log "[4/8] Подтягиваю образ и поднимаю контейнер"
+  (cd /opt/telemt && docker compose pull -q && docker compose up -d --remove-orphans)
+
+  log "[5/8] Включаю автозапуск Docker Compose (telemt-compose.service)"
+  telemt_write_systemd
+  systemctl daemon-reload
+  systemctl enable --now telemt-compose.service >/dev/null 2>&1 || true
+
+  printf '%s' "$SECRET" > /opt/telemt/user-secret
+  printf '%s' "$TLS_DOMAIN" > /opt/telemt/tls-domain
+  printf '%s' "$TELEMT_PORT" > /opt/telemt/listen-port
+}
+
+print_final_info_telemt() {
+  TELEMT_PORT="$1"
+  TLS_DOMAIN="$2"
+
+  PUBLIC_IP="$(curl -4fsSL https://api.ipify.org 2>/dev/null || true)"
+  if [ -z "$PUBLIC_IP" ]; then
+    PUBLIC_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  fi
+  [ -z "$PUBLIC_IP" ] && PUBLIC_IP="YOUR_SERVER_IP"
+
+  log ""
+  log "========== ГОТОВО (Telemt) =========="
+  log "Контейнер:"
+  docker ps --filter name=^telemt$ --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || true
+  log ""
+  log "Ссылки для клиента (Fake TLS); если пусто — подождите и смотрите docker logs telemt:"
+  n=0
+  while [ "$n" -lt 15 ]; do
+    if curl -fsS --max-time 2 "http://127.0.0.1:9091/v1/users" >/dev/null 2>&1; then
+      break
+    fi
+    n=$((n + 1))
+    sleep 1
+  done
+  if curl -fsS --max-time 5 "http://127.0.0.1:9091/v1/users" -o /tmp/telemt-users.json 2>/dev/null; then
+    python3 <<'PY'
+import json
+with open("/tmp/telemt-users.json", encoding="utf-8") as f:
+    data = json.load(f)
+for u in data:
+    links = u.get("links") or {}
+    tls = links.get("tls") or ()
+    for L in tls:
+        print(L)
+    if not tls:
+        for kind in ("secure", "classic"):
+            for L in links.get(kind) or ():
+                print(L)
+PY
+    rm -f /tmp/telemt-users.json
+  else
+    log "(API http://127.0.0.1:9091 пока недоступен — см. docker logs telemt)"
+  fi
+  log ""
+  log "Снова вывести ссылки: sh /path/to/get-links.sh (Telemt) или curl -s http://127.0.0.1:9091/v1/users"
+  log ""
+  log "Проверка маскировки (как в обзорах про active probing):"
+  log "curl -v -I --resolve ${TLS_DOMAIN}:${TELEMT_PORT}:${PUBLIC_IP} https://${TLS_DOMAIN}/"
+  log ""
+  log "Файлы: /opt/telemt/config.toml | логи: docker logs -n 80 telemt"
+  log "ad_tag / @MTProxybot для Telemt: https://github.com/telemt/telemt/blob/main/docs/FAQ.ru.md"
 }
 
 is_valid_hex32() {
@@ -355,11 +595,12 @@ main() {
   command -v ss >/dev/null 2>&1 || { log "ОШИБКА: ss не найден (установите iproute2)."; exit 1; }
 
   WORKERS="${WORKERS:-1}"
+  MODE="$(prompt_install_mode)"
 
-  log "Укажите порт, на котором будет работать MTProxy (по умолчанию 443):"
+  log "Укажите порт, на котором будет работать прокси (по умолчанию 443):"
   PORT="$(prompt_port)"
 
-  log "[1/10] Проверяю, что порт ${PORT} свободен"
+  log "Проверяю, что порт ${PORT} свободен"
   if ! port_is_free "$PORT"; then
     log "ОШИБКА: порт ${PORT} уже занят."
     ss -ltnp 2>/dev/null | grep ":${PORT}" || true
@@ -369,18 +610,30 @@ main() {
   SSH_PORT="$(get_ssh_port)"
   log "Обнаружен порт SSH: ${SSH_PORT}"
 
-  install_packages
-  create_system_user
-  build_mtproxy
+  if [ "$MODE" = "telemt" ]; then
+    TLS_DOMAIN="$(prompt_tls_domain)"
+    log "[1/8] Режим: Telemt (Docker)"
+    install_packages_telemt
+    telemt_setup "$PORT" "$TLS_DOMAIN"
+    configure_ufw "$PORT" "$SSH_PORT"
+    configure_fail2ban "$SSH_PORT"
+    log "[6/8] Готово"
+    print_final_info_telemt "$PORT" "$TLS_DOMAIN"
+  else
+    log "[1/10] Режим: классический MTProxy"
+    install_packages
+    create_system_user
+    build_mtproxy
 
-  SECRET="$(configure "$PORT" "$WORKERS")"
-  enable_services
-  configure_ufw "$PORT" "$SSH_PORT"
-  configure_fail2ban "$SSH_PORT"
+    SECRET="$(configure "$PORT" "$WORKERS")"
+    enable_services
+    configure_ufw "$PORT" "$SSH_PORT"
+    configure_fail2ban "$SSH_PORT"
 
-  print_final_info "$PORT" "$SECRET"
+    print_final_info "$PORT" "$SECRET"
 
-  prompt_proxy_tag
+    prompt_proxy_tag
+  fi
 }
 
 main "$@"
