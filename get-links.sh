@@ -27,9 +27,22 @@ telemt_links() {
   echo
   python3 <<'PY'
 import json
+
+def user_dicts(payload):
+    if isinstance(payload, list):
+        return [x for x in payload if isinstance(x, dict)]
+    if isinstance(payload, dict):
+        for key in ("users", "data", "items", "result", "payload"):
+            v = payload.get(key)
+            if isinstance(v, list):
+                return [x for x in v if isinstance(x, dict)]
+            if isinstance(v, dict) and v and all(isinstance(x, dict) for x in v.values()):
+                return list(v.values())
+    return []
+
 with open("/tmp/telemt-users.json", encoding="utf-8") as f:
-    data = json.load(f)
-for u in data:
+    raw = json.load(f)
+for u in user_dicts(raw):
     links = u.get("links") or {}
     tls = links.get("tls") or ()
     for L in tls:
