@@ -17,6 +17,11 @@ log() {
   printf '%s\n' "$1" >&2
 }
 
+# CR в конце строки (Windows SSH, некоторые терминалы) ломает case y/n и «1»/«2».
+sanitize_tty_line() {
+  printf '%s' "${1:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
 need_root() {
   if [ "$(id -u)" -ne 0 ]; then
     log "ОШИБКА: Запустите от root (например: sudo)."
@@ -40,7 +45,8 @@ prompt_port() {
   while :; do
     printf 'Порт MTProxy (TCP) [%s]: ' "$default_port" >&2
     # shellcheck disable=SC2162
-    read -r in_port < /dev/tty
+    read -r in_port < /dev/tty || true
+    in_port="$(sanitize_tty_line "${in_port:-}")"
 
     if [ -z "${in_port:-}" ]; then
       PORT="$default_port"
@@ -71,6 +77,7 @@ prompt_install_mode() {
   while :; do
     printf 'Выберите 1 или 2 [1]: ' >&2
     read -r m </dev/tty || true
+    m="$(sanitize_tty_line "${m:-}")"
     case "${m:-1}" in
       1) printf '%s' classic; return ;;
       2) printf '%s' telemt; return ;;
@@ -99,6 +106,7 @@ prompt_tls_domain() {
   while :; do
     printf 'SNI / tls_domain [%s]: ' "$default_sni" >&2
     read -r d </dev/tty || true
+    d="$(sanitize_tty_line "${d:-}")"
     if [ -z "${d:-}" ]; then
       d="$default_sni"
     fi
@@ -584,6 +592,7 @@ prompt_telemt_proxy_tag() {
   log ""
   printf 'Зарегистрировать прокси в @MTProxybot (ad_tag, спонсорский канал / статистика)? (y/n) [n]: ' >&2
   read -r answer < /dev/tty || true
+  answer="$(sanitize_tty_line "${answer:-}")"
   case "${answer:-n}" in
     y|Y|д|Д|да|Да|yes|Yes) ;;
     *) return 0 ;;
@@ -621,7 +630,8 @@ prompt_telemt_proxy_tag() {
   while :; do
     printf 'Введите proxy-tag (32 hex-символа): ' >&2
     read -r tag < /dev/tty || true
-    tag="$(echo "$tag" | tr -d ' \t\n\r')"
+    tag="$(sanitize_tty_line "$tag")"
+    tag="$(printf '%s' "$tag" | tr -d ' \t\n\r')"
     if is_valid_hex32 "$tag"; then
       break
     fi
@@ -648,6 +658,7 @@ prompt_proxy_tag() {
   log ""
   printf 'Добавить proxy-tag из бота @MTProxybot? (y/n) [n]: ' >&2
   read -r answer < /dev/tty || true
+  answer="$(sanitize_tty_line "${answer:-}")"
   case "${answer:-n}" in
     y|Y|д|Д|да|Да|yes|Yes) ;;
     *) return 0 ;;
@@ -674,7 +685,8 @@ prompt_proxy_tag() {
   while :; do
     printf 'Введите proxy-tag (32 hex-символа): ' >&2
     read -r tag < /dev/tty || true
-    tag="$(echo "$tag" | tr -d ' \t\n\r')"
+    tag="$(sanitize_tty_line "$tag")"
+    tag="$(printf '%s' "$tag" | tr -d ' \t\n\r')"
     if is_valid_hex32 "$tag"; then
       break
     fi
