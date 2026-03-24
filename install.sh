@@ -556,7 +556,7 @@ PY
   log "(TLS и цепочка сертификатов до маскируемого хоста — главный признак успеха; код HTTP у edge часто 301/302/403/418 и не обязан быть 200.)"
   log ""
   log "Файлы: /etc/telemt/telemt.toml | логи: journalctl -u telemt -n 80 --no-pager"
-  log "ad_tag / @MTProxybot для Telemt: https://github.com/telemt/telemt/blob/main/docs/FAQ.ru.md"
+  log "Регистрация в @MTProxybot: в конце установки будет запрос; подробнее: https://github.com/telemt/telemt/blob/main/docs/FAQ.ru.md"
 }
 
 is_valid_hex32() {
@@ -565,6 +565,83 @@ is_valid_hex32() {
     *[!0-9a-fA-F]*) return 1 ;;
   esac
   return 0
+}
+
+apply_telemt_ad_tag() {
+  tag="$1"
+  CFG="/etc/telemt/telemt.toml"
+  sed -i 's/^use_middle_proxy = false/use_middle_proxy = true/' "$CFG"
+  if grep -q '^ad_tag = ' "$CFG"; then
+    sed -i "s|^ad_tag = \".*\"|ad_tag = \"${tag}\"|" "$CFG"
+  else
+    sed -i "/^use_middle_proxy = true/a ad_tag = \"${tag}\"" "$CFG"
+  fi
+  chown root:telemt "$CFG"
+  chmod 0640 "$CFG"
+}
+
+prompt_telemt_proxy_tag() {
+  log ""
+  printf 'Зарегистрировать прокси в @MTProxybot (ad_tag, спонсорский канал / статистика)? (y/n) [n]: ' >&2
+  read -r answer < /dev/tty || true
+  case "${answer:-n}" in
+    y|Y|д|Д|да|Да|yes|Yes) ;;
+    *) return 0 ;;
+  esac
+
+  CFG="/etc/telemt/telemt.toml"
+  if [ ! -f "$CFG" ]; then
+    log "ОШИБКА: не найден $CFG"
+    return 0
+  fi
+
+  SECRET="$(cat /etc/telemt/user-secret 2>/dev/null || true)"
+  PORT="$(cat /etc/telemt/listen-port 2>/dev/null || echo 443)"
+  PUBLIC_HOST="$(grep -E '^public_host = ' "$CFG" 2>/dev/null | head -1 | sed 's/^public_host = "\([^"]*\)".*/\1/' || true)"
+  if [ -z "$PUBLIC_HOST" ] || [ "$PUBLIC_HOST" = "0.0.0.0" ]; then
+    PUBLIC_HOST="$(curl -4fsSL https://api.ipify.org 2>/dev/null || true)"
+    [ -z "$PUBLIC_HOST" ] && PUBLIC_HOST="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  fi
+  [ -z "$PUBLIC_HOST" ] && PUBLIC_HOST="YOUR_SERVER_IP"
+
+  log ""
+  log "В боте @MTProxybot: /newproxy, затем отправьте строки боту:"
+  log ""
+  log "host:port"
+  log "${PUBLIC_HOST}:${PORT}"
+  log ""
+  log "secret (сырой секрет из [access.users] / файла /etc/telemt/user-secret, 32 hex):"
+  log "${SECRET}"
+  log ""
+  log "Не отправляйте «secret» из ссылки tg://proxy — нужен только сырой hex с сервера."
+  log "Ссылку, которую пришлёт бот, не используйте — для Telemt она не подходит."
+  log "После ответа бота вставьте ниже полученный proxy-tag (ad_tag)."
+  log ""
+
+  while :; do
+    printf 'Введите proxy-tag (32 hex-символа): ' >&2
+    read -r tag < /dev/tty || true
+    tag="$(echo "$tag" | tr -d ' \t\n\r')"
+    if is_valid_hex32 "$tag"; then
+      break
+    fi
+    log "Ошибка: нужны ровно 32 hex-символа (0-9, a-f). Попробуйте снова."
+  done
+
+  apply_telemt_ad_tag "$tag"
+
+  printf '%s' "$tag" > /etc/telemt/proxy-tag
+  chown root:telemt /etc/telemt/proxy-tag
+  chmod 0640 /etc/telemt/proxy-tag
+
+  log "ad_tag записан, перезапускаю telemt..."
+  systemctl restart telemt.service
+  sleep 1
+  if systemctl is-active --quiet telemt.service; then
+    log "Готово. В боте: /myproxies → ваш прокси → Set promotion (публичная ссылка на канал; подождите до ~1 ч обновления)."
+  else
+    log "ПРЕДУПРЕЖДЕНИЕ: telemt не запустился. Проверьте: journalctl -u telemt -n 30"
+  fi
 }
 
 prompt_proxy_tag() {
@@ -650,6 +727,7 @@ main() {
     configure_fail2ban "$SSH_PORT"
     log "[6/8] Готово"
     print_final_info_telemt "$PORT" "$TLS_DOMAIN"
+    prompt_telemt_proxy_tag
   else
     log "[1/10] Режим: классический MTProxy"
     install_packages
