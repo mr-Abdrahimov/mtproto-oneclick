@@ -22,6 +22,33 @@ sanitize_tty_line() {
   printf '%s' "${1:-}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
+# y / yes / да и варианты с лишними символами после первой буквы
+affirmative_answer() {
+  _a="$(printf '%s' "${1:-}" | tr -d '\r\n\v\f' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  [ -z "$_a" ] && return 1
+  case "$_a" in
+    y|Y|yes|YES|Yes|д|Д|да|Да|ДА|da|DA|Da) return 0 ;;
+  esac
+  case "$_a" in
+    [yY]?*) return 0 ;;
+    [дД]?*) return 0 ;;
+    да*) return 0 ;;
+    [Дд][аА]*) return 0 ;;
+    [yY][eE][sS]*) return 0 ;;
+  esac
+  return 1
+}
+
+read_line_interactive() {
+  # stdin может быть не терминалом (curl|sh); /dev/tty надёжнее для вопросов
+  if [ -r /dev/tty ]; then
+    IFS= read -r _rl < /dev/tty || true
+  else
+    IFS= read -r _rl || true
+  fi
+  printf '%s' "${_rl:-}"
+}
+
 need_root() {
   if [ "$(id -u)" -ne 0 ]; then
     log "ОШИБКА: Запустите от root (например: sudo)."
@@ -591,12 +618,16 @@ apply_telemt_ad_tag() {
 prompt_telemt_proxy_tag() {
   log ""
   printf 'Зарегистрировать прокси в @MTProxybot (ad_tag, спонсорский канал / статистика)? (y/n) [n]: ' >&2
-  read -r answer < /dev/tty || true
-  answer="$(sanitize_tty_line "${answer:-}")"
-  case "${answer:-n}" in
-    y|Y|д|Д|да|Да|yes|Yes) ;;
-    *) return 0 ;;
-  esac
+  answer="$(read_line_interactive)"
+  answer="$(sanitize_tty_line "$answer")"
+  if ! affirmative_answer "$answer"; then
+    if [ -n "$answer" ]; then
+      log "Пропуск @MTProxybot: ответ не распознан как согласие (введите y или yes). Настройка: https://github.com/telemt/telemt/blob/main/docs/FAQ.ru.md"
+    fi
+    return 0
+  fi
+
+  log "Шаг @MTProxybot: скопируйте в бота строки ниже."
 
   CFG="/etc/telemt/telemt.toml"
   if [ ! -f "$CFG" ]; then
@@ -605,13 +636,24 @@ prompt_telemt_proxy_tag() {
   fi
 
   SECRET="$(cat /etc/telemt/user-secret 2>/dev/null || true)"
-  PORT="$(cat /etc/telemt/listen-port 2>/dev/null || echo 443)"
-  PUBLIC_HOST="$(grep -E '^public_host = ' "$CFG" 2>/dev/null | head -1 | sed 's/^public_host = "\([^"]*\)".*/\1/' || true)"
+  PORT="$(cat /etc/telemt/listen-port 2>/dev/null || true)"
+  if [ -z "$PORT" ]; then
+    PORT=443
+  fi
+  PUBLIC_HOST=""
+  _ph="$(grep -E '^public_host = ' "$CFG" 2>/dev/null | head -1 | sed 's/^public_host = "\([^"]*\)".*/\1/' || true)"
+  if [ -n "$_ph" ]; then
+    PUBLIC_HOST="$_ph"
+  fi
   if [ -z "$PUBLIC_HOST" ] || [ "$PUBLIC_HOST" = "0.0.0.0" ]; then
     PUBLIC_HOST="$(curl -4fsSL https://api.ipify.org 2>/dev/null || true)"
-    [ -z "$PUBLIC_HOST" ] && PUBLIC_HOST="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
   fi
-  [ -z "$PUBLIC_HOST" ] && PUBLIC_HOST="YOUR_SERVER_IP"
+  if [ -z "$PUBLIC_HOST" ]; then
+    PUBLIC_HOST="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  fi
+  if [ -z "$PUBLIC_HOST" ]; then
+    PUBLIC_HOST="YOUR_SERVER_IP"
+  fi
 
   log ""
   log "В боте @MTProxybot: /newproxy, затем отправьте строки боту:"
@@ -629,7 +671,7 @@ prompt_telemt_proxy_tag() {
 
   while :; do
     printf 'Введите proxy-tag (32 hex-символа): ' >&2
-    read -r tag < /dev/tty || true
+    tag="$(read_line_interactive)"
     tag="$(sanitize_tty_line "$tag")"
     tag="$(printf '%s' "$tag" | tr -d ' \t\n\r')"
     if is_valid_hex32 "$tag"; then
@@ -657,12 +699,15 @@ prompt_telemt_proxy_tag() {
 prompt_proxy_tag() {
   log ""
   printf 'Добавить proxy-tag из бота @MTProxybot? (y/n) [n]: ' >&2
-  read -r answer < /dev/tty || true
-  answer="$(sanitize_tty_line "${answer:-}")"
-  case "${answer:-n}" in
-    y|Y|д|Д|да|Да|yes|Yes) ;;
-    *) return 0 ;;
-  esac
+  answer="$(read_line_interactive)"
+  answer="$(sanitize_tty_line "$answer")"
+  if ! affirmative_answer "$answer"; then
+    if [ -n "$answer" ]; then
+      log "Пропуск @MTProxybot: ответ не распознан как согласие (введите y или yes)."
+    fi
+    return 0
+  fi
+  log "Данные для бота @MTProxybot:"
 
   PORT="$(grep -E '^PORT=' /etc/default/mtproxy 2>/dev/null | cut -d= -f2 || echo 443)"
   SECRET="$(cat /etc/mtproxy/user-secret 2>/dev/null || true)"
@@ -684,7 +729,7 @@ prompt_proxy_tag() {
 
   while :; do
     printf 'Введите proxy-tag (32 hex-символа): ' >&2
-    read -r tag < /dev/tty || true
+    tag="$(read_line_interactive)"
     tag="$(sanitize_tty_line "$tag")"
     tag="$(printf '%s' "$tag" | tr -d ' \t\n\r')"
     if is_valid_hex32 "$tag"; then
